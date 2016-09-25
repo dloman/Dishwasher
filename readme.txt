@@ -1,4 +1,4 @@
- this code is adatped from the rBoot Sming sample
+ this code is adapted from the rBoot Sming sample
 ------------------
 
 This sample integrates rBoot and Sming, for the many people who have been asking

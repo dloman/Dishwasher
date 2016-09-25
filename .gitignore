@@ -29,3 +29,8 @@
 *.app
 
 *.swp
+.cproject
+.project
+out/build/*
+rom0.ld
+

@@ -2,9 +2,9 @@
 #include <SmingCore/SmingCore.h>
 #include "WifiNetworkData.h"
 
-#define ROM_0_URL  "http://192.168.7.5:80/rom0.bin"
-#define ROM_1_URL  "http://192.168.7.5:80/rom1.bin"
-#define SPIFFS_URL "http://192.168.7.5:80/spiff_rom.bin"
+#define ROM_0_URL  "https://github.com/dloman/rBoot/raw/master/out/firmware/rom0.bin"
+#define ROM_1_URL  "https://github.com/dloman/rBoot/raw/master/out/firmware/rom0.bin"
+#define SPIFFS_URL "https://github.com/dloman/rBoot/raw/master/out/firmware/spiff_rom.bin"
 
 HttpServer gServer;
 
