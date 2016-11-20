@@ -2,11 +2,18 @@
 #include <SmingCore/SmingCore.h>
 #include "WifiNetworkData.h"
 
-#define ROM_0_URL  "https://github.com/dloman/rBoot/raw/master/out/firmware/rom0.bin"
-#define ROM_1_URL  "https://github.com/dloman/rBoot/raw/master/out/firmware/rom0.bin"
-#define SPIFFS_URL "https://github.com/dloman/rBoot/raw/master/out/firmware/spiff_rom.bin"
+constexpr int BootloaderRom = 0;
+constexpr int ApplicationRom = 1;
+
+constexpr int InputPin = 0;
+
+bool gConnected(false);
+
+rBootHttpUpdate* gpOtaUpdater;
 
 HttpServer gServer;
+
+Timer gTimer;
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
@@ -25,72 +32,72 @@ void OtaUpdate_CallBack(bool result)
 	}
   else
   {
+    gTimer.restart();
 		Serial.println("Firmware update failed!");
 	}
 }
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
-void OtaUpdate()
+void OtaUpdate(String Url)
 {
+  gTimer.stop();
+
 	Serial.println("Updating...");
 
-	rBootHttpUpdate otaUpdater;
-
-	// select rom slot to flash
-	auto bootConfig = rboot_get_config();
-
-	bool romSlot = bootConfig.current_rom;
-
-  romSlot = !romSlot;
-
-	// flash appropriate rom
-  auto romUrl = ROM_0_URL;
-	if (romSlot)
+  if (gpOtaUpdater)
   {
-    romUrl = ROM_1_URL;
-	}
+    delete gpOtaUpdater;
+  }
+	gpOtaUpdater = new rBootHttpUpdate();
 
-  otaUpdater.addItem(bootConfig.roms[romSlot], romUrl);
+  auto bootConfig = rboot_get_config();
 
+  { //Testing
+    bool romSlot = bootConfig.current_rom;
+
+    Serial.printf(
+      "trying to update, currently on %d rebooting to rom %d...url = %s\r\n",
+      romSlot,
+      !romSlot,
+      String(Url + ":8000/rom0.bin").c_str());
+  } //Testing
+
+  gpOtaUpdater->addItem(bootConfig.roms[ApplicationRom], Url + ":8000/rom0.bin");
+  gpOtaUpdater->addItem(RBOOT_SPIFFS_1, Url + ":8000/spiff_rom.bin");
 	// request switch and reboot on success
-  otaUpdater.switchToRom(romSlot);
+  gpOtaUpdater->switchToRom(ApplicationRom);
 	// and/or set a callback (called on failure or success without switching requested)
-	otaUpdater.setCallback(OtaUpdate_CallBack);
+	gpOtaUpdater->setCallback(OtaUpdate_CallBack);
 
 	// start update
-	otaUpdater.start();
-}
-
-//------------------------------------------------------------------------------
-//------------------------------------------------------------------------------
-void switchRoms()
-{
-	bool romSlot = rboot_get_current_rom();
-
-  romSlot = !romSlot;
-
-	Serial.printf("Swapping from rom %d to rom %d.\r\n", !romSlot, romSlot);
-
-	rboot_set_current_rom(romSlot);
-
-  Serial.println("Restarting...\r\n");
-
-  System.restart();
+	gpOtaUpdater->start();
+  Serial.println("started");
 }
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-void status(HttpRequest& request, HttpResponse& response)
+void status(
+  HttpRequest& request,
+  HttpResponse& response,
+  HttpServerConnection& connection)
 {
-  response.sendString("Nothing to see here. Move along");
+	auto DishwasherStatus = digitalRead(InputPin);
+
+	TemplateFileStream *tmpl = new TemplateFileStream("index.html");
+	auto &vars = tmpl->variables();
+	vars["status"] = String(DishwasherStatus);
+	response.sendTemplate(tmpl);
 }
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-void updateFirmware(HttpRequest& request, HttpResponse& response)
+void updateFirmware(
+  HttpRequest& request,
+  HttpResponse& response,
+  HttpServerConnection& connection)
 {
-  OtaUpdate();
+  OtaUpdate("http://" + connection.getRemoteIp().toString());
   response.sendString("trying to update firmware");
 }
 
@@ -98,20 +105,35 @@ void updateFirmware(HttpRequest& request, HttpResponse& response)
 //-----------------------------------------------------------------------------
 void startmDNS()
 {
-    struct mdns_info *info =
-      (struct mdns_info *)os_zalloc(sizeof(struct mdns_info));
-    info->host_name = (char *) "dishwasher";
-    info->ipAddr = WifiStation.getIP();
-    info->server_name = (char *) "dishwasher";
-    info->server_port = 80;
-    info->txt_data[0] = (char *) "version = now";
-    espconn_mdns_init(info);
+  struct mdns_info *info =
+    (struct mdns_info *)os_zalloc(sizeof(struct mdns_info));
+  info->host_name = (char *) "dishwasher";
+  info->ipAddr = WifiStation.getIP();
+  info->server_name = (char *) "dishwasher";
+  info->server_port = 80;
+  info->txt_data[0] = (char *) "version = now";
+  espconn_mdns_init(info);
+}
+
+//------------------------------------------------------------------------------
+//------------------------------------------------------------------------------
+void restartToApplication()
+{
+  if (gConnected)
+  {
+    Serial.println("no new application rom exiting bootloader now");
+
+    rboot_set_current_rom(ApplicationRom);
+
+    System.restart();
+  }
 }
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
 void startWebServer()
 {
+
   Serial.println("Connected");
   gServer.listen(80);
   gServer.addPath("/", status);
@@ -119,9 +141,22 @@ void startWebServer()
 
 	Serial.println("\r\n=== WEB SERVER STARTED ===");
 	Serial.println(WifiStation.getIP());
-	Serial.println("==============================\r\n");
+  Serial.println("==============================\r\n");
+
   startmDNS();
+
+  if (rboot_get_current_rom() == BootloaderRom)
+  {
+    gTimer.initializeMs(60 * 2000, restartToApplication).start();
+    Serial.println("countdown started");
+  }
+  else
+  {
+    rboot_set_current_rom(BootloaderRom);
+  }
+  gConnected = true;
 }
+
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
 void init()
@@ -129,21 +164,9 @@ void init()
   Serial.begin(115200); // 115200 by default
   Serial.systemDebugOutput(true); // Debug output to serial
 
-  // mount spiffs
-  int Slot = rboot_get_current_rom();
-  Serial.printf("\r\nCurrently running rom %d.\r\n", Slot);
-  if (Slot)
-  {
-    Serial.println("fuck");
-		debugf("trying to mount spiffs at %x, length %d", 0x40500000, SPIFF_SIZE);
-		spiffs_mount_manual(0x40500000, SPIFF_SIZE);
-	}
-  else
-  {
-    Serial.println("anus");
-		debugf("trying to mount spiffs at %x, length %d", RBOOT_SPIFFS_0 + 0x40200000, SPIFF_SIZE);
-		spiffs_mount_manual(RBOOT_SPIFFS_0 + 0x40200000, SPIFF_SIZE);
-  }
+  bool CurrentRom = rboot_get_current_rom();
+
+  Serial.printf("\r\nCurrently running rom %d.\r\n", CurrentRom);
 
 	WifiAccessPoint.enable(false);
 
